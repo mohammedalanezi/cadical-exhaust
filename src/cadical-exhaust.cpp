@@ -351,7 +351,7 @@ bool App::most_likely_existing_cnf_file (const char *path) {
 
 int App::main (int argc, char **argv) {
 
-  int order = 0;
+  std::vector<int> order;
   bool only_neg = false;
   FILE * solfile = NULL;
 
@@ -514,17 +514,24 @@ int App::main (int argc, char **argv) {
         decision_limit_specified = argv[i];
     } else if (!strcmp (argv[i], "--order")) {
       if (++i == argc)
-        APPERR ("argument to '--order' missing");
-      else if (order != 0)
-        APPERR ("multiple argument '--order %d' and '--order %s'", order, argv[i]);
-      else if (!parse_int_str (argv[i], order))
-        APPERR ("invalid argument in '--order %s'", argv[i]);
-      else if (order < 0)
-        APPERR ("invalid order");
-      else {
-        order = stoi(argv[i]);
-        std::cout << "c order = " << order << endl;
-      }
+          APPERR("argument to '--order' missing");
+        else {
+          int temp_val;
+          while (i < argc && parse_int_str(argv[i], temp_val)) {
+              if (temp_val < 0) {
+                  APPERR("invalid order %d", temp_val);
+              }
+              order.push_back(temp_val);
+              std::cout << "c added order: " << temp_val << endl;
+
+              // 2. Look ahead: is the NEXT argument also a number?
+              if (i + 1 < argc && argv[i + 1][0] != '-') {
+                  i++; // Move to the next argument to parse it in the next iteration of this while-loop
+              } else {
+                  break; // Next arg is a flag (e.g., --verbose) or we've reached the end
+              }
+          }
+        }
     } else if (!strcmp (argv[i], "--solfile")) {
       if (++i == argc)
         APPERR ("argument to '--solfile' missing");
