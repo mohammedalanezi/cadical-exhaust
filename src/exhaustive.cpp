@@ -80,8 +80,8 @@ void ExhaustiveSearch::block_partial_solution() {
     clause.reserve(observed.size() + 1);
     
     for (int j = 0; j < observed.size(); j++) {
-        int i = observed[j];
-        int lit = assignment[i];
+        int var = observed[j];
+        int lit = assignment[var - 1];
 
         if(lit==0)
             continue;
@@ -89,9 +89,9 @@ void ExhaustiveSearch::block_partial_solution() {
 #ifdef VERBOSE
         if (lit > 0) {
             if(!solfile)
-              std::cout << (i+1) << " ";
+              std::cout << var << " ";
             else
-              fprintf(solfile, "%d ", (i+1));
+              fprintf(solfile, "%d ", var);
         }
 #endif
         if (lit > 0 || !only_neg)
