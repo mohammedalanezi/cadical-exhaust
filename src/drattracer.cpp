@@ -98,9 +98,9 @@ void DratTracer::drat_delete_clause (const vector<int> &clause) {
 
 /*------------------------------------------------------------------------*/
 
-void DratTracer::add_derived_clause (uint64_t, bool,
+void DratTracer::add_derived_clause (int64_t, bool, int,
                                      const vector<int> &clause,
-                                     const vector<uint64_t> &) {
+                                     const vector<int64_t> &) {
   if (file->closed ())
     return;
   LOG ("DRAT TRACER tracing addition of derived clause");
@@ -120,7 +120,7 @@ void DratTracer::add_trusted_clause (const vector<int> &clause) {
 #endif
 }
 
-void DratTracer::delete_clause (uint64_t, bool, const vector<int> &clause) {
+void DratTracer::delete_clause (int64_t, bool, const vector<int> &clause) {
   if (file->closed ())
     return;
   LOG ("DRAT TRACER tracing deletion of clause");

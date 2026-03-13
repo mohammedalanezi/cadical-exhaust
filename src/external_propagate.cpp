@@ -1,5 +1,7 @@
 #include "internal.hpp"
 
+#include <algorithm>
+
 namespace CaDiCaL {
 
 /*----------------------------------------------------------------------------*/
@@ -25,6 +27,8 @@ void Internal::add_observed_var (int ilit) {
     // about it because it happened on an earlier decision level.
     // To not break the stack-like view of the trail, we simply backtrack to
     // undo this unnotifiable assignment.
+    REQUIRE (!conflict,
+             "can not observe assigned variable during conflict analysis");
     const int assignment_level = var (ilit).level;
     backtrack (assignment_level - 1);
   } else if (level && fixed (ilit)) {
@@ -36,14 +40,19 @@ void Internal::add_observed_var (int ilit) {
 //
 // Removing an observed variable should happen only once it is ensured
 // that there is no unexplained propagation in the implication
-// graph involving this variable.
+// graph involving this variable. To ensure that, the solver might
+// need to backtrack so that the variable becomes unassigned.
 //
 void Internal::remove_observed_var (int ilit) {
-  if (!fixed (ilit) && level) {
-    backtrack ();
+  if (!fixed (ilit) && level && val (ilit)) {
+    REQUIRE (
+        !conflict,
+        "can not unobserve assigned variable during conflict analysis");
+    const int assignment_level = var (ilit).level;
+    backtrack (assignment_level - 1);
   }
 
-  assert (fixed (ilit) || !level);
+  assert (fixed (ilit) || !val (ilit));
 
   const int idx = vidx (ilit);
   assert ((size_t) idx < relevanttab.size ());
@@ -74,7 +83,7 @@ bool Internal::observed (int ilit) const {
 //
 // Check for unexplained propagations upon disconnecting external propagator
 //
-void Internal::set_tainted_literal () {
+void Internal::set_changed_val () {
   if (!opts.ilb) {
     return;
   }
@@ -83,18 +92,19 @@ void Internal::set_tainted_literal () {
       continue;
     if (var (idx).reason != external_reason)
       continue;
-    if (!tainted_literal) {
-      tainted_literal = idx;
+    if (!changed_val) {
+      changed_val = idx;
       continue;
     }
-    assert (val (tainted_literal));
-    if (var (idx).level < var (tainted_literal).level) {
-      tainted_literal = idx;
+    assert (val (changed_val));
+    if (var (idx).level < var (changed_val).level) {
+      changed_val = idx;
     }
   }
 }
 
 void Internal::renotify_trail_after_ilb () {
+  assert (opts.ilb);
   if (!external_prop || external_prop_is_lazy || !trail.size () ||
       !opts.ilb) {
     return;
@@ -120,9 +130,57 @@ void Internal::renotify_trail_after_local_search () {
   renotify_full_trail ();
 }
 
+void Internal::renotify_full_trail_between_trail_pos (
+    int start_level, int end_level, int propagator_level,
+    std::vector<int> &assigned, bool start_new_level) {
+  assert (assigned.empty ());
+  int j = start_level;
+#ifdef LOGGING
+  LOG ("starting notification of level %d from trail %d .. %d",
+       propagator_level, start_level, end_level);
+#else
+  (void) propagator_level;
+#endif
+  if (start_new_level) {
+    if (assigned.size ())
+      external->propagator->notify_assignment (assigned);
+    assigned.clear ();
+    external->propagator->notify_new_decision_level ();
+  }
+  for (; j < end_level; ++j) {
+    int ilit = trail[j];
+    // In theory, 0 ilit can happen due to pseudo-decision levels
+    if (!ilit)
+      continue;
+
+    if (!observed (ilit))
+      continue;
+
+    int elit = externalize (ilit); // TODO: double-check tainting
+
+    LOG ("notifying elit %d @ %d aka %s", propagator_level, elit,
+         LOGLIT (ilit));
+    assert (elit);
+    // Fixed variables might get mapped (during compact) to another
+    // non-observed but fixed variable.
+    // This happens on root level, so notification about their assignment
+    // is already done.
+    assert (external->observed (elit) || fixed (ilit));
+    if (!external->ervars[abs (elit)])
+      assigned.push_back (elit);
+  }
+
+  if (assigned.size ())
+    external->propagator->notify_assignment (assigned);
+  assigned.clear ();
+}
+
 // It repeats ALL assignments of the trail, so the already notified
 // root-level assignments will be notified multiple times.
-
+//
+// As CaDiCaL is missing some '0' seperators, it is important to go
+// over slices from the control stack instead of going over the trail
+// directly.
 void Internal::renotify_full_trail () {
   const size_t end_of_trail = trail.size ();
   if (level) {
@@ -132,54 +190,37 @@ void Internal::renotify_full_trail () {
   }
   std::vector<int> assigned;
 
-  int prev_max_level = 0;
-  int current_level = 0;
   int propagator_level = 0;
 
-  while (notified < end_of_trail) {
-    int ilit = trail[notified++];
-    // In theory, 0 ilit can happen due to pseudo-decision levels
-    if (!ilit)
-      current_level = prev_max_level + 1;
-    else
-      current_level = var (ilit).level;
-
-    if (current_level > propagator_level) {
-      if (assigned.size ())
-        external->propagator->notify_assignment (assigned);
-      while (current_level > propagator_level) {
-        external->propagator->notify_new_decision_level ();
-        propagator_level++;
-      }
-      assigned.clear ();
-    }
-    // Current level can be smaller than prev_max_level due to chrono
-    if (current_level > prev_max_level)
-      prev_max_level = current_level;
-
-    if (!observed (ilit))
-      continue;
-
-    int elit = externalize (ilit); // TODO: double-check tainting
-    assert (elit);
-    // Fixed variables might get mapped (during compact) to another
-    // non-observed but fixed variable.
-    // This happens on root level, so notification about their assignment is
-    // already done.
-    assert (external->observed (elit) || fixed (ilit));
-    assigned.push_back (elit);
+  const int c_size = control.size ();
+  { // first all root-level literals
+    const int start_level = 0;
+    const int end_level =
+        (control.size () > 1 ? control[1].trail : end_of_trail);
+    renotify_full_trail_between_trail_pos (
+        start_level, end_level, propagator_level, assigned, false);
   }
-  if (assigned.size ())
-    external->propagator->notify_assignment (assigned);
-  assigned.clear ();
 
-  // In case there are some left over empty levels on the top of the trail,
-  // the external propagtor must be notified about them so the levels are
-  // synced
-  while (level > propagator_level) {
-    external->propagator->notify_new_decision_level ();
+  // notify all intermediate levels
+  for (int i = 2; i < c_size; ++i) {
+    const int start_level = control[i - 1].trail;
+    const int end_level = control[i].trail;
     propagator_level++;
+    LOG ("notification of %d", propagator_level);
+
+    renotify_full_trail_between_trail_pos (
+        start_level, end_level, propagator_level, assigned, true);
   }
+
+  // and the current level if there is non-root level one
+  if (level) {
+    const int start_level = control.back ().trail;
+    propagator_level++;
+    renotify_full_trail_between_trail_pos (
+        start_level, end_of_trail, propagator_level, assigned, true);
+  }
+  assert (propagator_level == level);
+  notified = trail.size ();
 
   return;
 }
@@ -206,13 +247,18 @@ bool Internal::is_decision (int ilit) {
   return true;
 }
 
-void Internal::force_backtrack (size_t new_level) {
-  if (!forced_backt_allowed || level <= 0 || new_level >= (size_t) level)
-    return;
+void Internal::force_backtrack (int new_level) {
+  REQUIRE (forced_backt_allowed,
+           "not allowed to force backtrack in that state of the solver.");
+  REQUIRE (new_level >= 0,
+           "the target level of a forced backtrack must be non-negative.");
+  REQUIRE (level > 0 && new_level < level,
+           "the target level of a forced backtrack must be smaller than "
+           "the current decision level.");
 
 #ifndef NDEBUG
   LOG ("external propagator forces backtrack to decision level"
-       "%zd (from level %d)",
+       "%d (from level %d)",
        new_level, level);
 #endif
   backtrack (new_level);
@@ -247,6 +293,12 @@ bool Internal::external_propagate () {
     notify_assignments ();
 
     int elit = external->propagator->cb_propagate ();
+
+    REQUIRE (
+        !elit || ((size_t) abs (elit) < external->is_observed.size () &&
+                  external->is_observed[abs (elit)]),
+        "external propagations are only allowed over observed variables.");
+
     stats.ext_prop.ext_cb++;
     stats.ext_prop.eprop_call++;
     while (elit) {
@@ -474,6 +526,7 @@ void Internal::add_external_clause (int propagated_elit,
                                     bool no_backtrack) {
   assert (original.empty ());
   int elit = 0;
+  bool propagated_lit_found = false;
 
   if (propagated_elit) {
     // Propagation reason clauses are by default assumed to be forgettable
@@ -485,13 +538,20 @@ void Internal::add_external_clause (int propagated_elit,
     LOG ("add external reason of propagated lit: %d", propagated_elit);
 #endif
     elit = external->propagator->cb_add_reason_clause_lit (propagated_elit);
+    if (elit == propagated_elit)
+      propagated_lit_found = true;
   } else
     elit = external->propagator->cb_add_external_clause_lit ();
+
+  REQUIRE (
+      !elit || ((size_t) abs (elit) < external->is_observed.size () &&
+                external->is_observed[abs (elit)]),
+      "external (reason) clause must contain only observed variables.");
 
   // we need to be build a new LRAT chain if we are already in the middle of
   // the analysis (like during failed assumptions)
   LOG (lrat_chain, "lrat chain before");
-  std::vector<uint64_t> lrat_chain_ext = std::move (lrat_chain);
+  std::vector<int64_t> lrat_chain_ext = std::move (lrat_chain);
   lrat_chain.clear ();
   clause.clear ();
 
@@ -504,15 +564,28 @@ void Internal::add_external_clause (int propagated_elit,
   force_no_backtrack = no_backtrack;
   from_propagator = true;
   while (elit) {
-    assert (external->is_observed[abs (elit)]);
     external->add (elit);
-    if (propagated_elit)
+    if (propagated_elit) {
       elit =
           external->propagator->cb_add_reason_clause_lit (propagated_elit);
-    else
+      if (elit == propagated_elit)
+        propagated_lit_found = true;
+    } else
       elit = external->propagator->cb_add_external_clause_lit ();
+
+    REQUIRE (
+        !elit || ((size_t) abs (elit) < external->is_observed.size () &&
+                  external->is_observed[abs (elit)]),
+        "external (reason) clause must contain only observed variables.");
   }
   external->add (elit);
+
+  REQUIRE (!propagated_elit || propagated_lit_found,
+           "external reason clause must contain the propagated literal.");
+#ifdef NCONTRACTS
+  (void) propagated_lit_found;
+#endif
+
   assert (original.empty ());
   assert (clause.empty ());
   force_no_backtrack = false;
@@ -643,7 +716,7 @@ void Internal::explain_external_propagations () {
     f.seen = false;
   }
 
-#ifndef NDEBUG
+#if 0 // has been fuzzed extensively
   for (auto idx : vars) {
     assert (!flags (idx).seen);
   }
@@ -663,7 +736,8 @@ void Internal::explain_external_propagations () {
 Clause *Internal::learn_external_reason_clause (int ilit,
                                                 int falsified_elit,
                                                 bool no_backtrack) {
-  assert (external->propagator);
+  assert (external->propagator); // REQ is defined by not allowing
+                                 // unobserving during conflict
   // we cannot modify clause during analysis
   auto clause_tmp = std::move (clause);
 
@@ -709,7 +783,7 @@ Clause *Internal::learn_external_reason_clause (int ilit,
 //
 Clause *Internal::wrapped_learn_external_reason_clause (int ilit) {
   Clause *res;
-  std::vector<uint64_t> chain_tmp{std::move (lrat_chain)};
+  std::vector<int64_t> chain_tmp{std::move (lrat_chain)};
   lrat_chain.clear ();
   if (clause.empty ()) {
     res = learn_external_reason_clause (ilit, 0, true);
@@ -773,8 +847,7 @@ void Internal::handle_external_clause (Clause *res) {
     if (val (pos0) < 0) {
       conflict = res;
       if (!from_propagator) {
-        // analyze (); // TODO: is it good to do conflict analysis?
-        // apparently its better to backtrack :(
+        // its better to backtrack instead of analyze
         backtrack (l1 - 1);
         conflict = 0;
         assert (!val (pos0) && !val (pos1));
@@ -845,7 +918,10 @@ bool Internal::external_check_solution () {
     // Here the variables must be filtered by external->is_observed,
     // because fixed variables are internally not necessarily observed
     // anymore.
-    for (int idx = 1; idx <= external->max_var; idx++) {
+    for (int idx = 1;
+         idx <= std::min ((int) external->is_observed.size () - 1,
+                          external->max_var);
+         idx++) {
       if (!external->is_observed[idx])
         continue;
       const int lit = external->ival (idx);
@@ -858,9 +934,22 @@ bool Internal::external_check_solution () {
 #endif
     }
 
+    forced_backt_allowed = true;
+    size_t assigned = num_assigned;
+    int level_before = level;
     bool is_consistent =
         external->propagator->cb_check_found_model (etrail);
     stats.ext_prop.ext_cb++;
+    forced_backt_allowed = false;
+
+    if (num_assigned != assigned || level != level_before ||
+        propagated < trail.size ()) {
+      // In case an external forced backtracking was performed, the CDCL
+      // loop needs to continue withouth further checks of the model.
+      trail_changed = true;
+      return !conflict;
+    }
+
     if (is_consistent) {
       LOG ("Found solution is approved by external propagator.");
       return true;
@@ -876,8 +965,8 @@ bool Internal::external_check_solution () {
           "Found solution triggered new clauses from external propagator.");
 
     while (has_external_clause) {
-      int level_before = level;
-      size_t assigned = num_assigned;
+      level_before = level;
+      assigned = num_assigned;
       add_external_clause (0);
       bool trail_changed =
           (num_assigned != assigned || level != level_before ||
@@ -944,15 +1033,18 @@ void Internal::notify_assignments () {
 
     int elit = externalize (ilit); // TODO: double-check tainting
     assert (elit);
+    if (external->ervars[abs (elit)])
+      continue;
     // Fixed variables might get mapped (during compact) to another
     // non-observed but fixed variable.
     // This happens on root level, so notification about their assignment is
     // already done.
-    assert (external->observed (elit) || fixed (ilit));
+    assert (external->observed (elit) ||
+            (fixed (ilit) && !external->ervars[abs (elit)]));
     assigned.push_back (elit);
   }
-
-  external->propagator->notify_assignment (assigned);
+  if (assigned.size ())
+    external->propagator->notify_assignment (assigned);
   return;
 }
 
@@ -1020,9 +1112,12 @@ int Internal::ask_decision () {
   if (!elit)
     return 0;
   LOG ("external propagator proposes decision: %d", elit);
+
+  REQUIRE ((size_t) abs (elit) < external->is_observed.size () &&
+               external->is_observed[abs (elit)],
+           "external decisions are only allowed over observed variables.");
+
   assert (external->is_observed[abs (elit)]);
-  if (!external->is_observed[abs (elit)])
-    return 0;
 
   int ilit = external->e2i[abs (elit)];
   if (elit < 0)
@@ -1034,11 +1129,9 @@ int Internal::ask_decision () {
        "%d, fixed: %d, val: %d)",
        elit, ilit, fixed (ilit), val (ilit));
 
-  if (fixed (ilit) || val (ilit)) {
-    LOG ("Proposed decision variable is already assigned, falling back to "
-         "internal decision.");
-    return 0;
-  }
+  REQUIRE (
+      !fixed (ilit) && !val (ilit),
+      "external decisions are only allowed over unassigned variables.");
 
   return ilit;
 }
@@ -1210,7 +1303,7 @@ void Internal::get_all_fixed_literals (std::vector<int> &fixed_lits) {
   int ilit;
   for (int eidx = 1; eidx < e2i_size; eidx++) {
     ilit = external->e2i[eidx];
-    if (ilit) {
+    if (ilit && !external->ervars[eidx]) {
       Flags &f = flags (ilit);
       if (f.status == Flags::FIXED) {
         fixed_lits.push_back (vals[abs (ilit)] * eidx);
