@@ -3,7 +3,7 @@
 #include <vector>
 
 class ExhaustiveSearch : CaDiCaL::ExternalPropagator {
-    CaDiCaL::Solver * solver;
+    CaDiCaL::Solver* solver;
     std::vector<std::vector<int>> new_clauses;          // Queue for blocking clauses
     std::vector<int> assignment;                        // Current assignment: signed literal or 0 for unassigned
     std::deque<std::vector<int>> assignments_by_level;  // History of assignment: vector of literals assigned at each level
@@ -12,13 +12,16 @@ class ExhaustiveSearch : CaDiCaL::ExternalPropagator {
     
     std::vector<int> observed;
     bool can_forget = false;
+    bool track_solutions = false;
     bool only_neg = false;
     long sol_count = 0;
     
     FILE * solfile;
+
+    std::vector<std::vector<int>> solutions; 
     
 public:
-    ExhaustiveSearch(CaDiCaL::Solver * s, std::vector<int> to_observe, bool only_neg, FILE * solfile, bool can_forget);
+    ExhaustiveSearch(CaDiCaL::Solver * s, std::vector<int> to_observe, bool only_neg, FILE * solfile, bool can_forget, bool track_solutions);
     ~ExhaustiveSearch ();
     void notify_assignment(const std::vector<int>& lits);
     void notify_new_decision_level ();
@@ -30,7 +33,9 @@ public:
     int cb_propagate ();
     int cb_add_reason_clause_lit (int plit);
     long get_solution_count() const { return sol_count; }
-    
+    const std::vector<std::vector<int>>& get_solutions() const { return solutions; }
+    void clear_solutions() { solutions.clear(); }
+
 private:
     void block_partial_solution(); // Block the current partial assignment
 };

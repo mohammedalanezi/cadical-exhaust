@@ -3,7 +3,7 @@
 #include <deque>
 #include <cassert>
 
-ExhaustiveSearch::ExhaustiveSearch(CaDiCaL::Solver * s, std::vector<int> to_observe, bool only_neg, FILE * solfile, bool can_forget) : solver(s) {
+ExhaustiveSearch::ExhaustiveSearch(CaDiCaL::Solver * s, std::vector<int> to_observe, bool only_neg, FILE * solfile, bool can_forget, bool track_solutions) : solver(s) {
     if (to_observe.empty())
     { // No order provided; run exhaustive search on all variables
         observed.reserve(s->vars());
@@ -14,6 +14,7 @@ ExhaustiveSearch::ExhaustiveSearch(CaDiCaL::Solver * s, std::vector<int> to_obse
         observed = to_observe;
 
     this->only_neg = only_neg;
+    this->track_solutions = track_solutions;
     this->solfile = solfile;
     this->can_forget = can_forget;
     
@@ -72,7 +73,10 @@ void ExhaustiveSearch::block_partial_solution() {
 #endif
 
     std::vector<int> clause;
+    std::vector<int> sol_vars; 
     clause.reserve(observed.size() + 1);
+    if (track_solutions) 
+        sol_vars.reserve(observed.size());
     
     for (int j = 0; j < observed.size(); j++) {
         int var = observed[j];
@@ -80,6 +84,8 @@ void ExhaustiveSearch::block_partial_solution() {
 
         if(lit==0)
             continue;
+        else if(track_solutions && lit > 0)
+            sol_vars.push_back(var);
         
 #ifdef VERBOSE
         if (lit > 0) {
@@ -102,6 +108,8 @@ void ExhaustiveSearch::block_partial_solution() {
 
     new_clauses.push_back(clause);
     solver->add_trusted_clause(clause);
+    if(track_solutions)
+        solutions.push_back(std::move(sol_vars));
 }
 
 bool ExhaustiveSearch::cb_check_found_model (const std::vector<int> & model) {

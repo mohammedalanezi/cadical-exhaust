@@ -355,6 +355,7 @@ int App::main (int argc, char **argv) {
     bool only_neg = false;
     FILE * solfile = NULL;
     bool can_forget = false;
+    bool track_solutions = false;
 
     // Handle options which lead to immediate exit first.
 
@@ -551,6 +552,10 @@ int App::main (int argc, char **argv) {
         else if (!strcmp (argv[i], "--can-forget")) {
         can_forget = true;
         std::cout << "c can-forget = true" << endl;
+        }
+        else if (!strcmp (argv[i], "--track-solutions")) {
+        track_solutions = true;
+        std::cout << "c track-solutions = true" << endl;
         }
 #ifndef __WIN32
         else if (!strcmp (argv[i], "-t")) {
@@ -916,7 +921,7 @@ int App::main (int argc, char **argv) {
     } else {
         solver->section ("solving");
 
-        ExhaustiveSearch se(solver, to_observe, only_neg, solfile, can_forget);
+        ExhaustiveSearch se(solver, to_observe, only_neg, solfile, can_forget, track_solutions);
 
         max_var = solver->active ();
         //std::cout << "c Nof vars: " << max_var << std::endl;
