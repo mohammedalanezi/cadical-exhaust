@@ -34,7 +34,7 @@ public:
     int cb_add_reason_clause_lit (int plit);
     long get_solution_count() const { return sol_count; }
     const std::vector<std::vector<int>>& get_solutions() const { return solutions; }
-    void clear_solutions() { solutions.clear(); }
+    void clear_solutions() { solutions.clear(); sol_count = 0; }
 
 private:
     void block_partial_solution(); // Block the current partial assignment
