@@ -63,10 +63,10 @@ all: libcadical.a cadical mobical
 # tester 'mobical') and the library are the main build targets.
 
 cadical-exhaust: cadical-exhaust.o libcadical.a makefile
-	$(COMPILE) -o $@ $< -L. -lcadical $(LIBS)
+	$(COMPILE_CPP) -o $@ $< -L. -lcadical $(LIBS)
 
 cadical: cadical.o libcadical.a makefile
-	$(COMPILE) -o $@ $< -L. -lcadical $(LIBS)
+	$(COMPILE_CPP) -o $@ $< -L. -lcadical $(LIBS)
 
 
 mobical: mobical.o libcadical.a makefile $(LIBS)
