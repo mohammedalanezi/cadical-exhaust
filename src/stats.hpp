@@ -14,7 +14,7 @@ struct Stats {
   Internal *internal;
 
   int64_t vars = 0; // internal initialized variables
-  int num_sol; // number of solutions so far
+  int num_sol = 0; // number of solutions so far
 
   int64_t conflicts = 0; // generated conflicts in 'propagate'
   int64_t decisions = 0; // number of decisions in 'decide'
