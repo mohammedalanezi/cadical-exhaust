@@ -587,7 +587,7 @@ fi
 #--------------------------------------------------------------------------#
 # Preparing make goals (@GOALS@)
 
-goals="libcadical.a cadical mobical cadical-exhaust"
+goals="libcadical.a cadical cadical-exhaust mobical"
 
 sharedlibrary="libcadical.so"
 cadicaldynamic="cadical-dynamic"

@@ -21,7 +21,7 @@ IPASIR=@IPASIR@
 #    It is usually not necessary to change anything below this line!       #
 ############################################################################
 
-SRC_APP=cadical.cpp mobical.cpp
+SRC_APP=cadical.cpp cadical-exhaust.cpp mobical.cpp
 
 SRC_IPASIR=src/ipasir.cpp
 SRC_SOLVER=$(subst ../src/,,$(sort $(wildcard ../src/*.cpp)))
@@ -43,7 +43,7 @@ COMPILE_CCC=$(CC) $(CFLAGS) -I$(DIR) -I../src
 
 #--------------------------------------------------------------------------#
 
-all: libcadical.a cadical mobical
+all: libcadical.a cadical cadical-exhaust mobical
 
 #--------------------------------------------------------------------------#
 
@@ -112,7 +112,7 @@ format:
 	clang-format -i ../test/*/*.[ch]
 
 clean:
-	rm -f *.o *.a cadical mobical makefile build.hpp
+	rm -f *.o *.a cadical cadical-exhaust mobical makefile build.hpp
 	rm -f *.gcda *.gcno *.gcov gmon.out
 
 test: all
