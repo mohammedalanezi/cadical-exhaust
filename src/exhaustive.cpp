@@ -101,7 +101,7 @@ void ExhaustiveSearch::block_partial_solution() {
     
 #ifdef VERBOSE
     if(!solfile) 
-        std::cout << "0" << std::endl;
+        std::cout << "0\n";
     else 
         fprintf(solfile, "0\n");
 #endif
