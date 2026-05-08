@@ -4,8 +4,7 @@
 #include <cassert>
 
 ExhaustiveSearch::ExhaustiveSearch(CaDiCaL::Solver * s, std::vector<int> to_observe, bool only_neg, FILE * solfile, bool can_forget, bool track_solutions) : solver(s) {
-    if (to_observe.empty())
-    { // No order provided; run exhaustive search on all variables
+    if (to_observe.empty()) { // No order provided; run exhaustive search on all variables
         observed.reserve(s->vars());
         for(int i=0; i < s->vars(); i++)
             observed.push_back(i+1);
@@ -30,10 +29,9 @@ ExhaustiveSearch::ExhaustiveSearch(CaDiCaL::Solver * s, std::vector<int> to_obse
 }
 
 ExhaustiveSearch::~ExhaustiveSearch () {
-    if (!observed.empty()) {
+    if (!observed.empty())
         solver->disconnect_external_propagator ();
         //std::cout << "c Number of solutions: " << sol_count << std::endl;
-    }
 }
 
 void ExhaustiveSearch::notify_assignment(const std::vector<int>& lits) {
@@ -64,52 +62,53 @@ void ExhaustiveSearch::notify_backtrack (size_t new_level) {
 }
 
 void ExhaustiveSearch::block_partial_solution() {
-    sol_count++;
-    solver->set_num_sol(sol_count);
-
-#ifdef VERBOSE
-    if (!solfile)
-      std::cout << "c New solution: ";
-#endif
-
     std::vector<int> clause;
-    std::vector<int> sol_vars; 
+    std::vector<int> pos_vars; // Positive variable numbers of this solution
     clause.reserve(observed.size() + 1);
-    if (track_solutions) 
-        sol_vars.reserve(observed.size());
+    pos_vars.reserve(observed.size());
     
-    for (int j = 0; j < observed.size(); j++) {
+    for (size_t j = 0; j < observed.size(); j++) {
         int var = observed[j];
         int lit = assignment[var - 1];
 
-        if(lit==0)
+        if (lit == 0)
             continue;
-        else if(track_solutions && lit > 0)
-            sol_vars.push_back(var);
-        
-#ifdef VERBOSE
-        if (lit > 0) {
-            if(!solfile)
-              std::cout << var << " ";
-            else
-              fprintf(solfile, "%d ", var);
-        }
-#endif
+
+        if (lit > 0)
+            pos_vars.push_back(var);
         if (lit > 0 || !only_neg)
             clause.push_back(-lit);
     }
-    
-#ifdef VERBOSE
-    if(!solfile) 
-        std::cout << "0\n";
-    else 
-        fprintf(solfile, "0\n");
-#endif
 
-    new_clauses.push_back(clause);
-    solver->add_trusted_clause(clause);
-    if(track_solutions)
-        solutions.push_back(std::move(sol_vars));
+    static constexpr uint64_t kHashSeed = 0x517cc1b727220a95ULL;
+    uint64_t h = can_forget ? es_wyhash(pos_vars.data(), pos_vars.size() * sizeof(int), kHashSeed) : 0; // wyhash the raw bytes of the pos_vars vector (order is deterministic: observed order).
+
+    bool is_new = !can_forget || seen_hashes.insert(h).second; // Duplication check
+
+    if (is_new) { // Is unique solution so we record it
+        sol_count++;
+        solver->set_num_sol(sol_count);
+
+        // Write to file (always a complete line) or console (if VERBOSE)
+        if (solfile) {
+            for (int var : pos_vars)
+                fprintf(solfile, "%d ", var);
+            fputs("0\n", solfile);
+        }
+#ifdef VERBOSE
+        else {
+            std::cout << "c New solution: ";
+            for (int var : pos_vars)
+                std::cout << var << " ";
+            std::cout << "0\n";
+        }
+#endif
+        if (track_solutions)
+            solutions.push_back(std::move(pos_vars));
+    }
+
+    new_clauses.push_back(std::move(clause)); // Always add the blocking clause regardless of duplication, otherwise the solver would find the same assignment again
+    solver->add_trusted_clause(new_clauses.back());
 }
 
 bool ExhaustiveSearch::cb_check_found_model (const std::vector<int> & model) {
@@ -119,9 +118,8 @@ bool ExhaustiveSearch::cb_check_found_model (const std::vector<int> & model) {
 
 bool ExhaustiveSearch::cb_has_external_clause (bool& is_forgettable) {
     is_forgettable = can_forget;
-    if (assigned_count == observed.size()) { // Found all assignments and no solution found
+    if (assigned_count == observed.size()) // Found all assignments and no solution found
         block_partial_solution();
-    }
     else
         return false;
 
