@@ -3,19 +3,15 @@
 #include <deque>
 #include <cassert>
 
-ExhaustiveSearch::ExhaustiveSearch(CaDiCaL::Solver * s, std::vector<int> to_observe, bool only_neg, FILE * solfile, bool can_forget, bool track_solutions) : solver(s) {
-    if (to_observe.empty()) { // No order provided; run exhaustive search on all variables
+ExhaustiveSearch::ExhaustiveSearch(CaDiCaL::Solver * s, const ExhaustiveSearchOptions& opts) : solver(s), solfile(opts.solfile), only_neg(opts.only_neg), 
+        can_forget(opts.can_forget), track_solutions(opts.track_solutions), output_solutions(opts.output_solutions), solution_callback(opts.solution_callback) {
+    if (opts.to_observe.empty()) { // No order provided; run exhaustive search on all variables
         observed.reserve(s->vars());
         for(int i=0; i < s->vars(); i++)
             observed.push_back(i+1);
     }
     else 
-        observed = to_observe;
-
-    this->only_neg = only_neg;
-    this->track_solutions = track_solutions;
-    this->solfile = solfile;
-    this->can_forget = can_forget;
+        observed = opts.to_observe;
     
     assignment.assign(s->vars(), 0);
     assignments_by_level.push_back({});
@@ -27,6 +23,8 @@ ExhaustiveSearch::ExhaustiveSearch(CaDiCaL::Solver * s, std::vector<int> to_obse
     for (int var : observed)
         solver->add_observed_var(var);
 }
+
+ExhaustiveSearch::ExhaustiveSearch(CaDiCaL::Solver * s) : ExhaustiveSearch(s, {}) { }
 
 ExhaustiveSearch::~ExhaustiveSearch () {
     if (!observed.empty())
@@ -67,8 +65,7 @@ void ExhaustiveSearch::block_partial_solution() {
     clause.reserve(observed.size() + 1);
     pos_vars.reserve(observed.size());
     
-    for (size_t j = 0; j < observed.size(); j++) {
-        int var = observed[j];
+    for (int var : observed) {
         int lit = assignment[var - 1];
 
         if (lit == 0)
@@ -89,31 +86,28 @@ void ExhaustiveSearch::block_partial_solution() {
         sol_count++;
         solver->set_num_sol(sol_count);
 
-        // Write to file (always a complete line) or console (if VERBOSE)
+        // Write to file (always a complete line) and/or console (if output_solutions)
         if (solfile) {
             for (int var : pos_vars)
                 fprintf(solfile, "%d ", var);
             fputs("0\n", solfile);
         }
-#ifdef VERBOSE
-        else {
+        if (output_solutions) {
             std::cout << "c New solution: ";
             for (int var : pos_vars)
                 std::cout << var << " ";
             std::cout << "0\n";
         }
-#endif
+
+        if(solution_callback)
+            solution_callback(pos_vars);
+
         if (track_solutions)
             solutions.push_back(std::move(pos_vars));
     }
 
     new_clauses.push_back(std::move(clause)); // Always add the blocking clause regardless of duplication, otherwise the solver would find the same assignment again
     solver->add_trusted_clause(new_clauses.back());
-}
-
-bool ExhaustiveSearch::cb_check_found_model (const std::vector<int> & model) {
-    (void)model;
-    return false;
 }
 
 bool ExhaustiveSearch::cb_has_external_clause (bool& is_forgettable) {
@@ -140,11 +134,4 @@ int ExhaustiveSearch::cb_add_external_clause_lit () {
         new_clauses[clause_idx].pop_back();
         return lit;
     }
-}
-
-int ExhaustiveSearch::cb_decide () { return 0; }
-int ExhaustiveSearch::cb_propagate () { return 0; }
-int ExhaustiveSearch::cb_add_reason_clause_lit (int plit) {
-    (void)plit;
-    return 0;
 }

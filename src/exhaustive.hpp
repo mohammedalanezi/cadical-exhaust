@@ -1,6 +1,7 @@
 #include "internal.hpp"
 #include <deque>
 #include <vector>
+#include <functional>
 #include <cstdint>
 #include <cstring>
 #include <unordered_set>
@@ -57,6 +58,19 @@ static inline uint64_t es_wyhash(const void* key, size_t len, uint64_t seed) {
     return t0 ^ t1;
 }
 
+struct ExhaustiveSearchOptions {
+    std::vector<int> to_observe;
+
+    bool only_neg = false;
+    bool can_forget = false;
+    bool track_solutions = false;
+    bool output_solutions = false;
+
+    FILE* solfile = nullptr;
+
+    void (*solution_callback)(const std::vector<int>&) = nullptr;
+}; 
+
 /**
  * @brief Exhaustive search over a subset of variables using CaDiCaL's external propagator.
  *
@@ -88,37 +102,38 @@ static inline uint64_t es_wyhash(const void* key, size_t len, uint64_t seed) {
  */
 class ExhaustiveSearch : CaDiCaL::ExternalPropagator {
     CaDiCaL::Solver* solver;
-    std::vector<std::vector<int>> new_clauses;
-    std::vector<int> assignment;
-    std::deque<std::vector<int>> assignments_by_level;
 
     size_t assigned_count = 0;
+    std::vector<int> assignment;
+    std::deque<std::vector<int>> assignments_by_level;
+    std::vector<std::vector<int>> new_clauses;
     
+    long sol_count = 0;
+    std::vector<std::vector<int>> solutions;
+    std::unordered_set<uint64_t> seen_hashes; // Deduplication: wyhash of the set of positive variables in the solution
+
+	// options:
+    FILE * solfile;
     std::vector<int> observed;
+    bool only_neg = false;
     bool can_forget = false;
     bool track_solutions = false;
-    bool only_neg = false;
-    long sol_count = 0;
-    
-    FILE * solfile;
-
-    std::vector<std::vector<int>> solutions;
-    
-    // Deduplication: wyhash of the set of positive variables in the solution
-    std::unordered_set<uint64_t> seen_hashes;
+    bool output_solutions = false;
+    void (*solution_callback)(const std::vector<int>&); // called whenever a new solution is found and passes it onto the callback function
     
 public:
-    ExhaustiveSearch(CaDiCaL::Solver * s, std::vector<int> to_observe, bool only_neg, FILE * solfile, bool can_forget, bool track_solutions);
+    ExhaustiveSearch(CaDiCaL::Solver * s, const ExhaustiveSearchOptions& opts);
+    ExhaustiveSearch(CaDiCaL::Solver * s);
     ~ExhaustiveSearch ();
     void notify_assignment(const std::vector<int>& lits);
     void notify_new_decision_level ();
     void notify_backtrack (size_t new_level);
-    bool cb_check_found_model (const std::vector<int> & model);
+    bool cb_check_found_model (const std::vector<int>& model) { (void)model; return false; };
     bool cb_has_external_clause (bool& is_forgettable);
     int cb_add_external_clause_lit ();
-    int cb_decide ();
-    int cb_propagate ();
-    int cb_add_reason_clause_lit (int plit);
+    int cb_decide () { return 0; };
+    int cb_propagate () { return 0; };
+    int cb_add_reason_clause_lit (int plit) { (void)plit; return 0; };
     long get_solution_count() const { return sol_count; }
     const std::vector<std::vector<int>>& get_solutions() const { return solutions; }
     void clear_solutions() { solutions.clear(); sol_count = 0; seen_hashes.clear(); }
