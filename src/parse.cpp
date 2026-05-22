@@ -291,9 +291,11 @@ const char *Parser::parse_dimacs_non_profiled (int &vars, int strict) {
 #endif
     }
     solver->add (lit);
-    if (!found_inccnf_header && !lit && parsed++ >= clauses &&
-        strict != FORCED)
-      PER ("too many clauses");
+    if (!lit) {
+      parsed++;
+      if (!found_inccnf_header && parsed > clauses && strict != FORCED)
+          PER ("too many clauses");
+    }
   }
 
   if (lit)
