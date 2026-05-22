@@ -201,6 +201,7 @@ ExhaustiveSearch<SolutionProcessor>::ExhaustiveSearch(CaDiCaL::Solver * s, const
     
     assigned_count = 0;
     assignment.assign(s->vars(), 0);
+    assumption_lit_.assign(s->vars(), 0);
     is_observed_.assign(s->vars(), false);
     assignments_by_level.push_back({});
     
