@@ -1031,6 +1031,17 @@ public:
 
   void set_num_sol (int n);
   
+  //------------------------------------------------------------------------
+  // Print DIMACS file to '<stdout>' for debugging and testing purposes,
+  // including derived units and assumptions.  Since it will print in terms
+  // of internal literals it is otherwise not really useful.  To write a
+  // DIMACS formula in terms of external variables use 'write_dimacs'.
+  //
+  //   require (!INITIALIZING)
+  //   ensure (!INITIALIZING)
+  //
+  void dump_cnf ();
+  
 private:
   //==== start of state ====================================================
 
@@ -1184,16 +1195,6 @@ private:
   //
   int call_external_solve_and_check_results (bool preprocess_only);
 
-  //------------------------------------------------------------------------
-  // Print DIMACS file to '<stdout>' for debugging and testing purposes,
-  // including derived units and assumptions.  Since it will print in terms
-  // of internal literals it is otherwise not really useful.  To write a
-  // DIMACS formula in terms of external variables use 'write_dimacs'.
-  //
-  //   require (!INITIALIZING)
-  //   ensure (!INITIALIZING)
-  //
-  void dump_cnf ();
   friend struct DumpCall; // Mobical calls 'dump_cnf' in
                           // 'DumpCall::execute ()'.
 
