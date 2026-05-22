@@ -524,15 +524,11 @@ int App::main (int argc, char **argv) {
                 while (i < argc && parse_int_str(argv[i], temp_val)) {
                     if (temp_val < 0) 
                         APPERR("invalid variable %d", temp_val);
-                    
                     to_observe.push_back(temp_val);
                     std::cout << temp_val << " ";
-
-                    if (i + 1 < argc && argv[i + 1][0] != '-') //is the NEXT argument also a number?
-                        i++; 
-                    else 
-                        break; 
+                    i++; 
                 }
+                i--;
                 std::cout << endl;
             }
         } else if (!strcmp (argv[i], "--solfile")) {
@@ -775,7 +771,7 @@ int App::main (int argc, char **argv) {
                                      help.c_str ());
     bool incremental;
     vector<int> cube_literals;
-    if (dimacs_path)
+    if (dimacs_path) // TODO?: Add code to the parser that gives warnings for each variable that is not covered by a clause (bitstring)
         err = solver->read_dimacs (dimacs_path, max_var, force_strict_parsing,
                                                              incremental, cube_literals);
     else
@@ -799,6 +795,15 @@ int App::main (int argc, char **argv) {
     solver->options ();
 
     int res = 0;
+    
+    ExhaustiveSearch se(solver, {
+        .to_observe = to_observe,
+        .assumptions = {},  // TODO: implement similar to observe, e.g. -assume lit ... lit 
+        .only_neg = only_neg, 
+        .can_forget = can_forget, 
+        .track_solutions = track_solutions,
+        .output_solutions = output_solutions,
+        .solfile = solfile,});
 
     if (incremental) {
         bool reporting = get ("report") > 1 || get ("verbose") > 0;
@@ -806,7 +811,7 @@ int App::main (int argc, char **argv) {
             set ("report", 0);
         if (!reporting)
             solver->section ("incremental solving");
-        size_t cubes = 0, solved = 0;
+        size_t cubes = 0, solved = 0, empty = 0, solutions = 0;
         size_t satisfiable = 0, unsatisfiable = 0, inconclusive = 0;
 #ifndef QUIET
         bool quiet = get ("quiet");
@@ -830,6 +835,7 @@ int App::main (int argc, char **argv) {
                 cube.push_back (lit);
             else {
                 reverse (cube.begin (), cube.end ());
+                se.set_assumptions(cube); 
                 for (auto other : cube)
                     solver->assume (other);
                 if (solved++) {
@@ -865,33 +871,44 @@ int App::main (int argc, char **argv) {
                                         relative (1e3 * time.sum, solved), tout.normal_code ());
                     if (reporting)
                         solver->message ();
-                    const char *cube_str, *status_str, *color_code;
+                    const char *cube_str, *color_code;
+                    char status_str[128];
+                    long sol_count = se.get_solution_count();
+                    if (sol_count == 0)
+                        empty++;
+                    solutions += sol_count;
                     if (res == 10) {
                         cube_str = "CUBE";
                         color_code = tout.green_code ();
-                        status_str = "SATISFIABLE";
+                        snprintf(status_str, sizeof(status_str),
+                        "SATISFIABLE with %ld solutions",
+                        sol_count);
                     } else if (res == 20) {
                         cube_str = "CUBE";
-                        color_code = tout.cyan_code ();
-                        status_str = "UNSATISFIABLE";
+                        color_code = tout.cyan_code();
+                        snprintf(status_str, sizeof(status_str),
+                        "UNSATISFIABLE with %ld solutions",
+                        sol_count);
                     } else {
                         cube_str = "cube";
-                        color_code = tout.magenta_code ();
-                        status_str = "inconclusive";
+                        color_code = tout.magenta_code();
+                        snprintf(status_str, sizeof(status_str),
+                        "inconclusive with %ld solutions",
+                        sol_count);
                     }
                     const char *fmt;
                     if (reporting)
-                        fmt = "%s%s %zu %s%s %s";
+                        fmt = "%s%s (%zu) %zu %s%s %s";
                     else
-                        fmt = "%s%s %zu %-13s%s %s";
-                    solver->message (fmt, color_code, cube_str, solved, status_str,
+                        fmt = "%s%s (%zu) %zu %-13s%s %s";
+                    solver->message (fmt, color_code, cube_str, cube.size(), solved, status_str,
                                                      tout.normal_code (), buffer);
                 }
 #endif
                 if (res == 10) {
                     satisfiable++;
                     solver->conclude ();
-                    break;
+                    //break;
                 } else if (res == 20) {
                     unsatisfiable++;
                     solver->conclude ();
@@ -914,25 +931,21 @@ int App::main (int argc, char **argv) {
         solver->section ("incremental summary");
         solver->message ("%zu cubes solved %.0f%%", solved,
                                          percent (solved, cubes));
+        solver->message ("%zu cubes empty %.0f%%", empty,
+                                         percent (empty, cubes));
         solver->message ("%zu cubes inconclusive %.0f%%", inconclusive,
                                          percent (inconclusive, solved));
         solver->message ("%zu cubes unsatisfiable %.0f%%", unsatisfiable,
                                          percent (unsatisfiable, solved));
         solver->message ("%zu cubes satisfiable %.0f%%", satisfiable,
                                          percent (satisfiable, solved));
+        solver->message ("%zu cube solutions", solutions);
 
         if (inconclusive && res == 20)
             res = 0;
     } else {
         solver->section ("solving");
 
-        ExhaustiveSearch se(solver, {
-            .to_observe = to_observe,
-            .only_neg = only_neg, 
-            .can_forget = can_forget, 
-            .track_solutions = track_solutions,
-            .output_solutions = output_solutions,
-            .solfile = solfile,});
 
         max_var = solver->active ();
         //std::cout << "c Nof vars: " << max_var << std::endl;
