@@ -143,6 +143,8 @@ class ExhaustiveSearch : CaDiCaL::ExternalPropagator {
     bool output_solutions = false;
     
     std::vector<int> assumptions_; // to ensure backtracks do not falsify assumptions
+    std::vector<int> assumption_lit_; // assumption_lit_[var-1] = required literal, or 0
+    int violated_assumptions_ = 0;
     
     SolutionProcessor processor_; // called whenever a new solution is found and passes it onto the callback function
     
@@ -169,7 +171,10 @@ public:
         pos_vars_buf_.clear();
         clause_buf_.clear();
         pending_pos_ = 0;
+
         assumptions_.clear();
+        assumption_lit_.assign(is_observed_.size(), 0);
+        violated_assumptions_ = 0;
 
         assigned_count = 0;
         std::fill(assignment.begin(), assignment.end(), 0);
@@ -237,6 +242,10 @@ void ExhaustiveSearch<SolutionProcessor>::notify_assignment(const std::vector<in
             assignment[idx] = lit; // Store the signed literal
             assigned_count++; // Increment total assigned variables
             assignments_by_level.back().push_back(lit); // Store when this literal was assigned
+
+            int req = assumption_lit_[idx];
+            if (req != 0 && lit != req)
+                violated_assumptions_++;
         }
     }    
 }
@@ -254,6 +263,10 @@ void ExhaustiveSearch<SolutionProcessor>::notify_backtrack (size_t new_level) {
             int idx = abs(lit) - 1;
             assignment[idx] = 0; 
             assigned_count--;
+
+            int req = assumption_lit_[idx];
+            if (req != 0 && lit != req)
+                violated_assumptions_--;
         }
         assignments_by_level.pop_back(); // Remove history from list
     }
@@ -261,11 +274,8 @@ void ExhaustiveSearch<SolutionProcessor>::notify_backtrack (size_t new_level) {
 
 template <typename SolutionProcessor>
 void ExhaustiveSearch<SolutionProcessor>::block_partial_solution() {
-    for (int as_lit : assumptions_) {
-        int idx = abs(as_lit) - 1;
-        if (assignment[idx] != 0 && assignment[idx] != as_lit)
-            return;
-    }
+    if (violated_assumptions_ > 0)
+        return;
 
     clause_buf_.clear();
     pos_vars_buf_.clear();
@@ -333,10 +343,15 @@ int ExhaustiveSearch<SolutionProcessor>::cb_add_external_clause_lit () {
 template <typename SolutionProcessor>
 void ExhaustiveSearch<SolutionProcessor>::set_assumptions(const std::vector<int>& assumptions) {
     assumptions_.clear();
+    assumption_lit_.assign(is_observed_.size(), 0); // reset
+    violated_assumptions_ = 0;
+
     for (int lit : assumptions) {
         int idx = abs(lit) - 1;
-        if (idx < (int)is_observed_.size() && is_observed_[idx])
-            assumptions_.push_back(lit);  // only observed vars can ever conflict
+        if (idx < (int)is_observed_.size() && is_observed_[idx]) {
+            assumptions_.push_back(lit);
+            assumption_lit_[idx] = lit; 
+        }
     }
     clear_solutions();
 }
