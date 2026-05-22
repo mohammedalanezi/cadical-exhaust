@@ -120,6 +120,7 @@ template <typename SolutionProcessor = GenericSolutionProcessor>
 class ExhaustiveSearch : CaDiCaL::ExternalPropagator {
     CaDiCaL::Solver* solver;
 
+    size_t assigned_count = 0;
     std::vector<int> assignment;
     std::deque<std::vector<int>> assignments_by_level;
 
@@ -146,7 +147,6 @@ class ExhaustiveSearch : CaDiCaL::ExternalPropagator {
     SolutionProcessor processor_; // called whenever a new solution is found and passes it onto the callback function
     
 public:
-    size_t assigned_count = 0;
     ExhaustiveSearch(CaDiCaL::Solver * s, const ExhaustiveSearchOptions& opts, SolutionProcessor proc = SolutionProcessor{});
     ExhaustiveSearch(CaDiCaL::Solver * s);
     ~ExhaustiveSearch ();
