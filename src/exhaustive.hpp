@@ -64,6 +64,9 @@ static inline uint64_t es_wyhash(const void* key, size_t len, uint64_t seed) {
 struct ExhaustiveSearchOptions {
     std::vector<int> to_observe;
 
+    // Call ExhaustiveSearch::set_assumptions() (and solver->assume() for each literal) before every new solve() call.
+    std::vector<int> assumptions; // literals that must hold for the current solve call. 
+
     bool only_neg = false;
     bool can_forget = false;
     bool track_solutions = false;
@@ -117,26 +120,33 @@ template <typename SolutionProcessor = GenericSolutionProcessor>
 class ExhaustiveSearch : CaDiCaL::ExternalPropagator {
     CaDiCaL::Solver* solver;
 
-    size_t assigned_count = 0;
     std::vector<int> assignment;
     std::deque<std::vector<int>> assignments_by_level;
-    std::vector<std::vector<int>> new_clauses;
+
+    std::vector<int> pos_vars_buf_;
+    std::vector<int> clause_buf_;
+    size_t pending_pos_ = 0;
     
     long sol_count = 0;
+    long global_sol_count = 0;
     std::vector<std::vector<int>> solutions;
     std::unordered_set<uint64_t> seen_hashes; // Deduplication: wyhash of the set of positive variables in the solution
 
-	// options:
+    // options:
     FILE * solfile;
     std::vector<int> observed;
+    std::vector<bool> is_observed_;
     bool only_neg = false;
     bool can_forget = false;
     bool track_solutions = false;
     bool output_solutions = false;
     
+    std::vector<int> assumptions_; // to ensure backtracks do not falsify assumptions
+    
     SolutionProcessor processor_; // called whenever a new solution is found and passes it onto the callback function
     
 public:
+    size_t assigned_count = 0;
     ExhaustiveSearch(CaDiCaL::Solver * s, const ExhaustiveSearchOptions& opts, SolutionProcessor proc = SolutionProcessor{});
     ExhaustiveSearch(CaDiCaL::Solver * s);
     ~ExhaustiveSearch ();
@@ -150,8 +160,23 @@ public:
     int cb_propagate () { return 0; };
     int cb_add_reason_clause_lit (int plit) { (void)plit; return 0; };
     long get_solution_count() const { return sol_count; }
+    long get_global_solution_count() const { return global_sol_count; }
     const std::vector<std::vector<int>>& get_solutions() const { return solutions; }
     void clear_solutions() { solutions.clear(); sol_count = 0; seen_hashes.clear(); }
+    void set_assumptions(const std::vector<int>& assumptions);
+    void reset() {
+        clear_solutions();
+        pos_vars_buf_.clear();
+        clause_buf_.clear();
+        pending_pos_ = 0;
+        assumptions_.clear();
+
+        assigned_count = 0;
+        std::fill(assignment.begin(), assignment.end(), 0);
+
+        assignments_by_level.clear();
+        assignments_by_level.push_back({});
+    }
 
 private:
     void block_partial_solution();
@@ -169,15 +194,25 @@ ExhaustiveSearch<SolutionProcessor>::ExhaustiveSearch(CaDiCaL::Solver * s, const
     else 
         observed = opts.to_observe;
     
+    assigned_count = 0;
     assignment.assign(s->vars(), 0);
+    is_observed_.assign(s->vars(), false);
     assignments_by_level.push_back({});
     
     solver->connect_external_propagator(this);
+
+    pos_vars_buf_.reserve(observed.size());
+    clause_buf_.reserve(observed.size() + 1);
     
     //std::cout << "c Running exhaustive search on " << observed.size() << " variables" << std::endl;
     
-    for (int var : observed)
+    for (int var : observed) {
         solver->add_observed_var(var);
+        is_observed_[var - 1] = true;
+    }
+
+    if(!opts.assumptions.empty())
+        set_assumptions(opts.assumptions);
         
     if constexpr (std::is_same_v<SolutionProcessor, GenericSolutionProcessor>)
         processor_.cb = opts.solution_callback; // take the pointer
@@ -191,7 +226,7 @@ template <typename SolutionProcessor>
 ExhaustiveSearch<SolutionProcessor>::~ExhaustiveSearch () {
     if (!observed.empty())
         solver->disconnect_external_propagator ();
-        //std::cout << "c Number of solutions: " << sol_count << std::endl;
+    //std::cout << "c Number of solutions: " << sol_count << " (" << global_sol_count << ")" << std::endl;
 }
 
 template <typename SolutionProcessor>
@@ -226,80 +261,82 @@ void ExhaustiveSearch<SolutionProcessor>::notify_backtrack (size_t new_level) {
 
 template <typename SolutionProcessor>
 void ExhaustiveSearch<SolutionProcessor>::block_partial_solution() {
-    std::vector<int> clause;
-    std::vector<int> pos_vars; // Positive variable numbers of this solution
-    clause.reserve(observed.size() + 1);
-    pos_vars.reserve(observed.size());
+    for (int as_lit : assumptions_) {
+        int idx = abs(as_lit) - 1;
+        if (assignment[idx] != 0 && assignment[idx] != as_lit)
+            return;
+    }
+
+    clause_buf_.clear();
+    pos_vars_buf_.clear();
     
     for (int var : observed) {
         int lit = assignment[var - 1];
 
         if (lit == 0)
             continue;
-
         if (lit > 0)
-            pos_vars.push_back(var);
+            pos_vars_buf_.push_back(var);
         if (lit > 0 || !only_neg)
-            clause.push_back(-lit);
+            clause_buf_.push_back(-lit);
     }
 
     static constexpr uint64_t kHashSeed = 0x517cc1b727220a95ULL;
-    uint64_t h = can_forget ? es_wyhash(pos_vars.data(), pos_vars.size() * sizeof(int), kHashSeed) : 0; // wyhash the raw bytes of the pos_vars vector (order is deterministic: observed order).
+    uint64_t h = can_forget ? es_wyhash(pos_vars_buf_.data(), pos_vars_buf_.size() * sizeof(int), kHashSeed) : 0; // wyhash the raw bytes of the pos_vars vector (order is deterministic: observed order).
 
     bool is_new = !can_forget || seen_hashes.insert(h).second; // Duplication check
-
+    
     if (is_new) { // Is unique solution so we record it
         sol_count++;
+        global_sol_count++;
         solver->set_num_sol(sol_count);
 
         // Write to file (always a complete line) and/or console (if output_solutions)
         if (solfile) {
-            for (int var : pos_vars)
+            for (int var : pos_vars_buf_)
                 fprintf(solfile, "%d ", var);
             fputs("0\n", solfile);
         }
         if (output_solutions) {
             std::cout << "c New solution: ";
-            for (int var : pos_vars)
+            for (int var : pos_vars_buf_)
                 std::cout << var << " ";
             std::cout << "0\n";
         }
 
         if(processor_)
-            processor_(pos_vars);
+            processor_(pos_vars_buf_);
 
         if (track_solutions)
-            solutions.push_back(std::move(pos_vars));
+            solutions.push_back(pos_vars_buf_);
     }
 
-    new_clauses.push_back(std::move(clause)); // Always add the blocking clause regardless of duplication, otherwise the solver would find the same assignment again
-    solver->add_trusted_clause(new_clauses.back());
+    pending_pos_ = clause_buf_.size();
+    solver->add_trusted_clause(clause_buf_);
 }
 
 template <typename SolutionProcessor>
 bool ExhaustiveSearch<SolutionProcessor>::cb_has_external_clause (bool& is_forgettable) {
     is_forgettable = can_forget;
-    if (assigned_count == observed.size()) // Found all assignments and no solution found
+    if (assigned_count == observed.size())
         block_partial_solution();
-    else
-        return false;
-
-    return true;
+    return pending_pos_ > 0;
 }
 
 template <typename SolutionProcessor>
 int ExhaustiveSearch<SolutionProcessor>::cb_add_external_clause_lit () {
-    if (new_clauses.empty()) 
-        return 0;
-    else {
-        size_t clause_idx = new_clauses.size() - 1;
-        if (new_clauses[clause_idx].empty()) {
-            new_clauses.pop_back();
-            return 0;
-        }
+    if (pending_pos_ > 0)
+        return clause_buf_[--pending_pos_];
+    return 0;
+}
 
-        int lit = new_clauses[clause_idx].back();
-        new_clauses[clause_idx].pop_back();
-        return lit;
+template <typename SolutionProcessor>
+void ExhaustiveSearch<SolutionProcessor>::set_assumptions(const std::vector<int>& assumptions) {
+    assumptions_.clear();
+    for (int lit : assumptions) {
+        int idx = abs(lit) - 1;
+        if (idx < (int)is_observed_.size() && is_observed_[idx])
+            assumptions_.push_back(lit);  // only observed vars can ever conflict
     }
+    clear_solutions();
 }
