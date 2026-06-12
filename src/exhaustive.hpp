@@ -2,11 +2,13 @@
 #include <type_traits>
 #include <deque>
 #include <vector>
+#include <span>
 #include <functional>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <cassert>
+#include <algorithm>
 #include <unordered_set>
 
 // wyhash helpers (fast, inline, no external dependencies)
@@ -74,17 +76,20 @@ struct ExhaustiveSearchOptions {
 
     FILE* solfile = nullptr;
     
-    void (*solution_callback)(const std::vector<int>&) = nullptr;
+    bool (*solution_callback)(const std::vector<int>&) = nullptr;
 }; 
 
-struct GenericSolutionProcessor {
-    void (*cb)(const std::vector<int>&) = nullptr;
-
-    void operator()(const std::vector<int>& solution) const {
-        if (cb) cb(solution);
-    }
-
+struct GenericPolicy {
+    bool (*cb)(const std::vector<int>&) = nullptr;
+    bool operator()(const std::vector<int>& solution) const { if (cb) return cb(solution); return true; }
+    bool is_partial_solution(const std::vector<int>& pos_vars) const { return true; }
+    void minimize(std::vector<int>& clause) const { }
+    void notify_assignment(const int, const int) const { }
+    bool should_early() const {return false; }
     explicit operator bool() const { return cb != nullptr; }
+    static constexpr bool minimizeClause = false;
+    static constexpr bool earlyClause = false;
+    static constexpr bool notifyAssignment = false;
 };
 
 /**
@@ -114,9 +119,21 @@ struct GenericSolutionProcessor {
  *         cb_check_found_model) is sound but may explore many extensions before pruning,
  *         greatly slowing the solving.
  *
+ * @note   Early blocking (can_refine): if the Policy provides can_refine(), the propagator
+ *         will also try to add a blocking clause whenever the partial assignment changes and
+ *         can_refine() returns false, even before all observed variables are assigned.
+ *         This can dramatically prune the search when infeasibility is detectable early.
+ *         can_refine() is called at most once per distinct partial-assignment change.
+ *
+ * @note   Clause minimization (kMinimizeClause): when the Policy sets kMinimizeClause=true
+ *         and provides can_refine(), the blocking clause for each full solution is greedily
+ *         shortened by back-tracking through pos_vars and dropping any variable v for which
+ *         can_refine(remaining) is still false. Soundness is guaranteed: a variable is only
+ *         dropped when its removal leaves a set that is provably non-refinable.
+ *
  * @see    CaDiCaL::ExternalPropagator
  */
-template <typename SolutionProcessor = GenericSolutionProcessor>
+template <typename Policy = GenericPolicy>
 class ExhaustiveSearch : CaDiCaL::ExternalPropagator {
     CaDiCaL::Solver* solver;
 
@@ -142,14 +159,19 @@ class ExhaustiveSearch : CaDiCaL::ExternalPropagator {
     bool track_solutions = false;
     bool output_solutions = false;
     
-    std::vector<int> assumptions_; // to ensure backtracks do not falsify assumptions
+    std::vector<int> assumptions_; // to ensure backtracks do not falsify assumptions, this happens in highly unconstrained instances where unit propagation excels
     std::vector<int> assumption_lit_; // assumption_lit_[var-1] = required literal, or 0
     int violated_assumptions_ = 0;
     
-    SolutionProcessor processor_; // called whenever a new solution is found and passes it onto the callback function
+    bool early_block_dirty_ = false; // early-blocking dirty flag: set whenever the partial assignment changes so that cb_has_external_clause knows to call try_early_block() once.
+    long int attempt_early_blocking = 0;
+    long int success_early_blocking = 0;
+    
+    Policy policy_; // called whenever a new solution is found and passes it onto the callback function
+    std::vector<int> notify_scratch_; // reusable scratch buffer for notify_assignment spans
     
 public:
-    ExhaustiveSearch(CaDiCaL::Solver * s, const ExhaustiveSearchOptions& opts, SolutionProcessor proc = SolutionProcessor{});
+    ExhaustiveSearch(CaDiCaL::Solver * s, const ExhaustiveSearchOptions& opts, Policy poly = Policy{});
     ExhaustiveSearch(CaDiCaL::Solver * s);
     ~ExhaustiveSearch ();
     void notify_assignment(const std::vector<int>& lits);
@@ -161,7 +183,10 @@ public:
     int cb_decide () { return 0; };
     int cb_propagate () { return 0; };
     int cb_add_reason_clause_lit (int plit) { (void)plit; return 0; };
+    const Policy& get_policy() const { return policy_; }
     long get_solution_count() const { return sol_count; }
+    long get_attempt_early_blocking_count() const { return attempt_early_blocking; }
+    long get_early_blocking_count() const { return success_early_blocking; }
     long get_global_solution_count() const { return global_sol_count; }
     const std::vector<std::vector<int>>& get_solutions() const { return solutions; }
     void clear_solutions() { solutions.clear(); sol_count = 0; seen_hashes.clear(); }
@@ -181,16 +206,19 @@ public:
 
         assignments_by_level.clear();
         assignments_by_level.push_back({});
+
+        early_block_dirty_ = false;
     }
 
 private:
     void block_partial_solution();
+    void try_early_block();
+    void minimize_blocking_clause();
 };
 
-
-template <typename SolutionProcessor>
-ExhaustiveSearch<SolutionProcessor>::ExhaustiveSearch(CaDiCaL::Solver * s, const ExhaustiveSearchOptions& opts, SolutionProcessor proc) : solver(s), solfile(opts.solfile), only_neg(opts.only_neg), 
-        can_forget(opts.can_forget), track_solutions(opts.track_solutions), output_solutions(opts.output_solutions), processor_(std::move(proc)) {
+template <typename Policy>
+ExhaustiveSearch<Policy>::ExhaustiveSearch(CaDiCaL::Solver * s, const ExhaustiveSearchOptions& opts, Policy poly) : solver(s), solfile(opts.solfile), only_neg(opts.only_neg), 
+        can_forget(opts.can_forget), track_solutions(opts.track_solutions), output_solutions(opts.output_solutions), policy_(std::move(poly)) {
     if (opts.to_observe.empty()) { // No order provided; run exhaustive search on all variables
         observed.reserve(s->vars());
         for(int i=0; i < s->vars(); i++)
@@ -209,6 +237,8 @@ ExhaustiveSearch<SolutionProcessor>::ExhaustiveSearch(CaDiCaL::Solver * s, const
 
     pos_vars_buf_.reserve(observed.size());
     clause_buf_.reserve(observed.size() + 1);
+    if constexpr (Policy::notifyAssignment)
+        notify_scratch_.reserve(observed.size());
     
     //std::cout << "c Running exhaustive search on " << observed.size() << " variables" << std::endl;
     
@@ -220,23 +250,26 @@ ExhaustiveSearch<SolutionProcessor>::ExhaustiveSearch(CaDiCaL::Solver * s, const
     if(!opts.assumptions.empty())
         set_assumptions(opts.assumptions);
         
-    if constexpr (std::is_same_v<SolutionProcessor, GenericSolutionProcessor>)
-        processor_.cb = opts.solution_callback; // take the pointer
+    if constexpr (std::is_same_v<Policy, GenericPolicy>)
+        policy_.cb = opts.solution_callback; // take the pointer
     
 }
 
-template <typename SolutionProcessor>
-ExhaustiveSearch<SolutionProcessor>::ExhaustiveSearch(CaDiCaL::Solver * s) : ExhaustiveSearch(s, {}, {}) { }
+template <typename Policy>
+ExhaustiveSearch<Policy>::ExhaustiveSearch(CaDiCaL::Solver * s) : ExhaustiveSearch(s, {}, {}) { }
 
-template <typename SolutionProcessor>
-ExhaustiveSearch<SolutionProcessor>::~ExhaustiveSearch () {
+template <typename Policy>
+ExhaustiveSearch<Policy>::~ExhaustiveSearch () {
     if (!observed.empty())
         solver->disconnect_external_propagator ();
     //std::cout << "c Number of solutions: " << sol_count << " (" << global_sol_count << ")" << std::endl;
 }
 
-template <typename SolutionProcessor>
-void ExhaustiveSearch<SolutionProcessor>::notify_assignment(const std::vector<int>& lits) {
+template <typename Policy>
+void ExhaustiveSearch<Policy>::notify_assignment(const std::vector<int>& lits) {
+    if constexpr (Policy::notifyAssignment)
+        notify_scratch_.clear();
+
     for (int lit : lits) { // Track assignments of observed variables
         int idx = abs(lit) - 1;
         if (assignment[idx] == 0) { // Variable not yet assigned
@@ -247,21 +280,34 @@ void ExhaustiveSearch<SolutionProcessor>::notify_assignment(const std::vector<in
             int req = assumption_lit_[idx];
             if (req != 0 && lit != req)
                 violated_assumptions_++;
+                
+            if constexpr (Policy::notifyAssignment)
+                if (assignment[idx] > 0)
+                    policy_.notify_assignment(abs(lit), lit);
         }
-    }    
+    }
+ 
+    early_block_dirty_ = true;
 }
 
-template <typename SolutionProcessor>
-void ExhaustiveSearch<SolutionProcessor>::notify_new_decision_level () {
+template <typename Policy>
+void ExhaustiveSearch<Policy>::notify_new_decision_level () {
     assignments_by_level.push_back({}); // Add new vector to track history
 }
 
-template <typename SolutionProcessor>
-void ExhaustiveSearch<SolutionProcessor>::notify_backtrack (size_t new_level) {
+template <typename Policy>
+void ExhaustiveSearch<Policy>::notify_backtrack (size_t new_level) {
+    pending_pos_ = 0;
     while (assignments_by_level.size() > new_level + 1) {
         std::vector<int>& lits_to_undo = assignments_by_level.back(); // History to wipe
+        
         for (int lit : lits_to_undo) {
             int idx = abs(lit) - 1;
+
+            if constexpr (Policy::notifyAssignment)
+                if (assignment[idx] > 0)
+                    policy_.notify_assignment(abs(lit), 0);
+                    
             assignment[idx] = 0; 
             assigned_count--;
 
@@ -271,10 +317,11 @@ void ExhaustiveSearch<SolutionProcessor>::notify_backtrack (size_t new_level) {
         }
         assignments_by_level.pop_back(); // Remove history from list
     }
+    early_block_dirty_ = true;
 }
 
-template <typename SolutionProcessor>
-void ExhaustiveSearch<SolutionProcessor>::block_partial_solution() {
+template <typename Policy>
+void ExhaustiveSearch<Policy>::block_partial_solution() {
     if (violated_assumptions_ > 0)
         return;
 
@@ -292,17 +339,18 @@ void ExhaustiveSearch<SolutionProcessor>::block_partial_solution() {
             clause_buf_.push_back(-lit);
     }
 
+    // --- Deduplication & solution accounting (always uses the FULL assignment) ---
     static constexpr uint64_t kHashSeed = 0x517cc1b727220a95ULL;
-    uint64_t h = can_forget ? es_wyhash(pos_vars_buf_.data(), pos_vars_buf_.size() * sizeof(int), kHashSeed) : 0; // wyhash the raw bytes of the pos_vars vector (order is deterministic: observed order).
+    uint64_t h = can_forget ? es_wyhash(pos_vars_buf_.data(), pos_vars_buf_.size() * sizeof(int), kHashSeed) : 0;
 
-    bool is_new = !can_forget || seen_hashes.insert(h).second; // Duplication check
+    bool is_new = !can_forget || seen_hashes.insert(h).second;
+    bool should_minimize = true;
     
-    if (is_new) { // Is unique solution so we record it
+    if (is_new) {
         sol_count++;
         global_sol_count++;
         solver->set_num_sol(sol_count);
 
-        // Write to file (always a complete line) and/or console (if output_solutions)
         if (solfile) {
             for (int var : pos_vars_buf_)
                 fprintf(solfile, "%d ", var);
@@ -315,34 +363,51 @@ void ExhaustiveSearch<SolutionProcessor>::block_partial_solution() {
             std::cout << "0\n";
         }
 
-        if(processor_)
-            processor_(pos_vars_buf_);
+        if(policy_) {
+            if constexpr (Policy::minimizeClause)
+                should_minimize = policy_(pos_vars_buf_);
+            else   
+                policy_(pos_vars_buf_);
+        }
 
         if (track_solutions)
             solutions.push_back(pos_vars_buf_);
     }
 
+    if(should_minimize)
+        if constexpr (Policy::minimizeClause)
+            if (!policy_.is_partial_solution(pos_vars_buf_))
+                minimize_blocking_clause();
+
     pending_pos_ = clause_buf_.size();
     solver->add_trusted_clause(clause_buf_);
 }
 
-template <typename SolutionProcessor>
-bool ExhaustiveSearch<SolutionProcessor>::cb_has_external_clause (bool& is_forgettable) {
+template <typename Policy>
+bool ExhaustiveSearch<Policy>::cb_has_external_clause (bool& is_forgettable) {
     is_forgettable = can_forget;
-    if (assigned_count == observed.size())
+
+    if (assigned_count == observed.size()) {
         block_partial_solution();
+    } else if constexpr (Policy::earlyClause) {
+        if (assigned_count < observed.size() && early_block_dirty_ && policy_.should_early()) {
+            early_block_dirty_ = false;
+            try_early_block();
+        }
+    }
+
     return pending_pos_ > 0;
 }
 
-template <typename SolutionProcessor>
-int ExhaustiveSearch<SolutionProcessor>::cb_add_external_clause_lit () {
+template <typename Policy>
+int ExhaustiveSearch<Policy>::cb_add_external_clause_lit () {
     if (pending_pos_ > 0)
         return clause_buf_[--pending_pos_];
     return 0;
 }
 
-template <typename SolutionProcessor>
-void ExhaustiveSearch<SolutionProcessor>::set_assumptions(const std::vector<int>& assumptions) {
+template <typename Policy>
+void ExhaustiveSearch<Policy>::set_assumptions(const std::vector<int>& assumptions) {
     assumptions_.clear();
     assumption_lit_.assign(is_observed_.size(), 0); // reset
     violated_assumptions_ = 0;
@@ -355,4 +420,59 @@ void ExhaustiveSearch<SolutionProcessor>::set_assumptions(const std::vector<int>
         }
     }
     clear_solutions();
+}
+
+// ---------------------------------------------------------------------------
+// try_early_block
+// ---------------------------------------------------------------------------
+template <typename Policy>
+void ExhaustiveSearch<Policy>::try_early_block() {
+    if (violated_assumptions_ > 0) return;
+
+    attempt_early_blocking++;
+
+    // Build the clause for the current partial assignment.
+    pos_vars_buf_.clear();
+    clause_buf_.clear();
+    for (int var : observed) {
+        int lit = assignment[var - 1];
+        if (lit == 0) continue;
+        if (lit > 0) pos_vars_buf_.push_back(var);
+        if (lit > 0 || !only_neg) clause_buf_.push_back(-lit);
+    }
+
+    if (clause_buf_.empty()) return;
+
+    if (!policy_.is_partial_solution(pos_vars_buf_)) {
+        if constexpr (Policy::minimizeClause)
+            minimize_blocking_clause(); // default greedy minimiser
+
+        pending_pos_ = clause_buf_.size();
+        solver->add_trusted_clause(clause_buf_);
+
+        success_early_blocking++;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// minimize_blocking_clause
+// ---------------------------------------------------------------------------
+template <typename Policy>
+void ExhaustiveSearch<Policy>::minimize_blocking_clause() {
+    if constexpr (Policy::minimizeClause) {
+        policy_.minimize(clause_buf_);
+        return;
+    }
+    
+    for (int i = (int)pos_vars_buf_.size() - 1; i >= 0; --i) {
+        int var = pos_vars_buf_[i];
+        pos_vars_buf_.erase(pos_vars_buf_.begin() + i); // temporarily remove var
+
+        if (!policy_.is_partial_solution(pos_vars_buf_)) { // still non-refinable without var -> drop var entirely
+            auto it = std::find(clause_buf_.begin(), clause_buf_.end(), -var);
+            if (it != clause_buf_.end()) clause_buf_.erase(it);
+        } else { // becomes refinable -> var is essential -> restore
+            pos_vars_buf_.insert(pos_vars_buf_.begin() + i, var);
+        }
+    }
 }
