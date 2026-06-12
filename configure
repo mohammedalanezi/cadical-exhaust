@@ -349,7 +349,7 @@ fi
 
 if [ $pedantic = yes ]
 then
-  CXXFLAGS="$CXXFLAGS --pedantic -Werror -std=c++11"
+  CXXFLAGS="$CXXFLAGS --pedantic -Werror -std=c++20"
   CFLAGS="$CFLAGS --pedantic -Werror"
   case x"$CXX" in
     x*g++*|x*clang++*) 
@@ -404,31 +404,28 @@ fi
 
 #--------------------------------------------------------------------------#
 
-# Since C++11 is becoming the standard newer versions of 'g++' (7.3 for
-# instance) discourage certain GCC extensions, particularly the GCC version
-# of variadic macros, if the same concept exists in the standard.  This
-# forced us to replace all GCC style 'ARGS...' macros with '...' and
-# '__VA_ARGS__'.  Otherwise compiling the library with '--pedantic -Werror'
-# would fail (configuration flag '-p').  However, older versions of 'gcc'
-# (such as 4.8) would disallow these new forms of macros unless we
-# explicitly enforce the new standard with '-std=c++17'.  Here we try to
-# figure out whether we need that flag. 
+# We require C++20 for features such as concepts, ranges, and other
+# modern language features.  If the compiler does not default to C++20,
+# we explicitly add '-std=c++20'.  Here we try to figure out whether
+# we need that flag.
 
-feature=./configure-requires-c++11
+feature=./configure-requires-c++20
 cat <<EOF > $feature.cpp
 #include <cstdio>
 #include <vector>
+#include <concepts>
 
 // old variadic macro usage 'ARGS...' / '#ARGS' discouraged in g++-7...
 // new variadic macro usage '...' / '__VA_ARGS__' available in C99/C++11
 //
 #define MACRO(FMT, ...) printf (FMT "\n", __VA_ARGS__)
 
-// we use ranged for loops which became available in gcc 4.6 and for
-// the gcc 4.6 as well as 4.8 requires '-std=c++11' too.
+// we use ranged for loops and concepts available in C++20.
 //
-unsigned f (const std::vector<unsigned> & a) {
-  unsigned res = 0;
+template <typename T>
+requires std::integral<T>
+T sum (const std::vector<T> & a) {
+  T res = 0;
   for (auto i : a) res += i;
   return res;
 }
@@ -439,22 +436,22 @@ if $CXX $CXXFLAGS $WERROR -o $feature.exe $feature.cpp 2>>configure.log
 then
   if [ "`$feature.exe 2>>configure.log|tr -d '\r'`" = 42 ]
   then
-    msg "compiler supports all required C99/C++11 extensions"
+    msg "compiler supports all required C++20 extensions"
   else
-    die "checking compilation without '-std=c++11' failed"
+    die "checking compilation without '-std=c++20' failed"
   fi
 else
-  CXXFLAGS="$CXXFLAGS -std=c++11"
+  CXXFLAGS="$CXXFLAGS -std=c++20"
   if $CXX $CXXFLAGS -o $feature.exe $feature.cpp 2>>configure.log
   then
     if [ "`$feature.exe 2>>configure.log|tr -d '\r'`" = 42 ]
     then
-      msg "using '-std=c++11' for all required C99/C++11 extensions"
+      msg "using '-std=c++20' for all required C++20 extensions"
     else
-      die "checking compilation with '-std=c++11' failed"
+      die "checking compilation with '-std=c++20' failed"
     fi
   else
-    die "compiler does not support C99/C++11 even with '-std=c++11'"
+    die "compiler does not support C++20 even with '-std=c++20'"
   fi
 fi
 
