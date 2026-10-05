@@ -893,7 +893,6 @@ void Checker::print_stats () {
   MSG ("proof deletions:        %15" PRId64 "", stats.proof_deletions);
   MSG ("proof lemma literals:   %15" PRId64 "", stats.proof_lemma_literals);
   MSG ("proof delete literals:  %15" PRId64 "", stats.proof_delete_literals);
-  MSG ("total proof lemmas:     %15" PRId64 "", stats.proof_lemmas);
   MSG ("total proof lines:      %15" PRId64 "",
        stats.proof_lemmas + stats.proof_deletions);
   MSG ("total proof literals:   %15" PRId64 "",
@@ -930,7 +929,6 @@ void LratChecker::print_stats () {
   MSG ("proof deletions:        %15" PRId64 "", stats.proof_deletions);
   MSG ("proof lemma literals:   %15" PRId64 "", stats.proof_lemma_literals);
   MSG ("proof delete literals:  %15" PRId64 "", stats.proof_delete_literals);
-  MSG ("total proof lemmas:     %15" PRId64 "", stats.proof_lemmas);
   MSG ("total proof lines:      %15" PRId64 "",
        stats.proof_lemmas + stats.proof_deletions);
   MSG ("total proof literals:   %15" PRId64 "",
