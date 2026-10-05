@@ -560,6 +560,10 @@ void Checker::add_original_clause (int64_t id, bool, const vector<int> &c,
 void Checker::add_derived_clause (int64_t id, bool, int,
                                   const vector<int> &c,
                                   const vector<int64_t> &) {
+  // Proof size statistics: counted before the early return so that the
+  // whole proof is accounted for, even after the empty clause was derived.
+  stats.proof_lemmas++;
+  stats.proof_lemma_literals += c.size ();
   if (inconsistent)
     return;
   START (checking);
@@ -587,6 +591,9 @@ void Checker::add_derived_clause (int64_t id, bool, int,
 /*------------------------------------------------------------------------*/
 
 void Checker::delete_clause (int64_t id, bool, const vector<int> &c) {
+  // Proof size statistics (see 'add_derived_clause').
+  stats.proof_deletions++;
+  stats.proof_delete_literals += c.size ();
   if (inconsistent)
     return;
   START (checking);
@@ -626,6 +633,11 @@ void Checker::add_assumption_clause (int64_t id, const vector<int> &c,
                                      const vector<int64_t> &chain) {
   add_derived_clause (id, true, 0, c, chain);
   delete_clause (id, true, c);
+  // Assumption clauses are not proof steps, so undo their proof counts.
+  stats.proof_lemmas--;
+  stats.proof_deletions--;
+  stats.proof_lemma_literals -= c.size ();
+  stats.proof_delete_literals -= c.size ();
 }
 
 /*------------------------------------------------------------------------*/

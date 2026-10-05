@@ -113,7 +113,11 @@ class LratChecker : public StatTracer {
     int64_t checks; // number of implication checks
 
     int64_t collections; // garbage collections
-
+    
+    int64_t proof_lemmas;
+    int64_t proof_deletions;
+    int64_t proof_lemma_literals;
+    int64_t proof_delete_literals;
   } stats;
 
 public:

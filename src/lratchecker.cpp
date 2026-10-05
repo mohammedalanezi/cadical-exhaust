@@ -484,6 +484,8 @@ void LratChecker::add_derived_clause (int64_t id, bool, int w,
     stats.rat++;
   stats.added++;
   stats.derived++;
+  stats.proof_lemmas++;
+  stats.proof_lemma_literals += c.size ();
   import_clause (c);
   last_id = id;
   assert (id == current_id + 1);
@@ -543,6 +545,11 @@ void LratChecker::add_assumption_clause (int64_t id, const vector<int> &c,
   }
   add_derived_clause (id, true, 0, c, chain);
   delete_clause (id, true, c);
+  // Assumption clauses are not proof steps, so undo their proof counts.
+  stats.proof_lemmas--;
+  stats.proof_deletions--;
+  stats.proof_lemma_literals -= c.size ();
+  stats.proof_delete_literals -= c.size ();
   assumption_clauses.push_back (id);
 }
 
@@ -627,6 +634,8 @@ void LratChecker::delete_clause (int64_t id, bool, const vector<int> &c) {
   START (checking);
   LOG (c, "LRAT CHECKER checking deletion of clause[%" PRId64 "]", id);
   stats.deleted++;
+  stats.proof_deletions++;
+  stats.proof_delete_literals += c.size ();
   import_clause (c);
   last_id = id;
   LratCheckerClause **p = find (id), *d = *p;

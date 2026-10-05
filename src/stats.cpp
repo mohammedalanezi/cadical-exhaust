@@ -888,6 +888,16 @@ void Checker::print_stats () {
        stats.collisions, relative (stats.collisions, stats.searches));
   MSG ("searches:        %15" PRId64 "", stats.searches);
   MSG ("units:           %15" PRId64 "", stats.units);
+
+  MSG ("proof lemmas:           %15" PRId64 "", stats.proof_lemmas);
+  MSG ("proof deletions:        %15" PRId64 "", stats.proof_deletions);
+  MSG ("proof lemma literals:   %15" PRId64 "", stats.proof_lemma_literals);
+  MSG ("proof delete literals:  %15" PRId64 "", stats.proof_delete_literals);
+  MSG ("total proof lemmas:     %15" PRId64 "", stats.proof_lemmas);
+  MSG ("total proof lines:      %15" PRId64 "",
+       stats.proof_lemmas + stats.proof_deletions);
+  MSG ("total proof literals:   %15" PRId64 "",
+       stats.proof_lemma_literals + stats.proof_delete_literals);
 }
 
 void LratChecker::print_stats () {
@@ -915,6 +925,16 @@ void LratChecker::print_stats () {
   MSG ("collisions:      %15" PRId64 "   %10.2f    per search",
        stats.collisions, relative (stats.collisions, stats.searches));
   MSG ("searches:        %15" PRId64 "", stats.searches);
+
+  MSG ("proof lemmas:           %15" PRId64 "", stats.proof_lemmas);
+  MSG ("proof deletions:        %15" PRId64 "", stats.proof_deletions);
+  MSG ("proof lemma literals:   %15" PRId64 "", stats.proof_lemma_literals);
+  MSG ("proof delete literals:  %15" PRId64 "", stats.proof_delete_literals);
+  MSG ("total proof lemmas:     %15" PRId64 "", stats.proof_lemmas);
+  MSG ("total proof lines:      %15" PRId64 "",
+       stats.proof_lemmas + stats.proof_deletions);
+  MSG ("total proof literals:   %15" PRId64 "",
+       stats.proof_lemma_literals + stats.proof_delete_literals);
 }
 
 } // namespace CaDiCaL
